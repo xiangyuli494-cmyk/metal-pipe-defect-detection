@@ -1,0 +1,45 @@
+# 金属细管内壁缺陷检测系统 - 生产环境反代示例
+# 拷贝为 /etc/nginx/sites-available/defect-detection 后启用
+
+server {
+    listen 80;
+    server_name defect.example.com;
+
+    # 前端静态文件（pnpm run build 后产物）
+    root /var/www/metal-pipe-defect-detection/frontend/dist;
+    index index.html;
+
+    # SPA 路由 fallback
+    location / {
+        try_files $uri /index.html;
+    }
+
+    # 上传结果图片
+    location /uploads/ {
+        alias /var/www/metal-pipe-defect-detection/uploads/;
+        expires 7d;
+        access_log off;
+    }
+
+    # 后端 API
+    location /api/ {
+        proxy_pass http://127.0.0.1:8002;
+        proxy_set_header Host              $host;
+        proxy_set_header X-Real-IP         $remote_addr;
+        proxy_set_header X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+
+        # 上传大文件需要更长超时
+        proxy_read_timeout    300s;
+        proxy_send_timeout    300s;
+        client_max_body_size  50m;
+    }
+
+    # 后端文档
+    location /docs {
+        proxy_pass http://127.0.0.1:8002/docs;
+    }
+    location /openapi.json {
+        proxy_pass http://127.0.0.1:8002/openapi.json;
+    }
+}

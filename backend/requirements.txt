@@ -1,0 +1,47 @@
+# 金属细管内壁缺陷检测系统 - Python后端依赖
+
+# Web框架
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+
+# 数据库
+sqlalchemy==2.0.23
+pymysql==1.1.0
+cryptography==41.0.7
+supabase==2.0.3
+
+# AI/ML框架（根据实际模型选择安装）
+# PyTorch
+# torch==2.1.1
+# torchvision==0.16.1
+
+# TensorFlow
+# tensorflow==2.15.0
+
+# YOLO
+# ultralytics==8.0.200
+
+# ONNX
+# onnxruntime==1.16.3
+
+# 图像处理
+pillow==10.1.0
+opencv-python==4.8.1.78
+numpy==1.26.2
+
+# 认证
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+
+# 工具库
+pydantic==2.5.2
+python-dotenv==1.0.0
+requests==2.31.0
+aiofiles==23.2.1
+
+# 开发工具
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2

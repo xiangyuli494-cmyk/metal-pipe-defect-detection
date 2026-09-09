@@ -1,0 +1,77 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+.venv/
+ENV/
+.pytest_cache/
+
+# 编译产物
+*.egg-info/
+build/
+*.whl
+
+# Node
+node_modules/
+dist/
+.next/
+.cache/
+.parcel-cache/
+.npm
+.eslintcache
+
+# 环境变量
+.env
+.env.local
+.env.*.local
+
+# 数据库
+*.db
+*.sqlite
+*.sqlite3
+
+# 模型权重（已迁到 models_weights/，避免重复）
+# 如不想上传大文件，注释下行并保留外链
+# backend/models/*.pt
+
+# 上传目录
+uploads/
+logs/
+*.pid
+
+# 数据库初始化锁文件
+sql/.dbinit.done
+
+# 操作系统
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 编辑器
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# 日志
+*.log
+logs/*.log
+
+# 临时
+tmp/
+temp/
+*.tmp
+*.bak
+
+# 训练产物（体积大）
+runs/
+*.pt.bak
+
+# YOLO 输出
+runs/detect/
+runs/segment/
