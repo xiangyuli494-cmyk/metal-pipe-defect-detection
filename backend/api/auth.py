@@ -9,8 +9,15 @@ from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 
-# 配置 - SECRET_KEY 可从环境变量覆盖
-SECRET_KEY = os.environ.get("JWT_SECRET_KEY", "f5-defect-detection-jwt-secret-key-2026")
+# 配置 - SECRET_KEY 必须从环境变量读取，禁止使用硬编码默认值
+# 说明：硬编码密钥一旦泄露（本项目已开源到 GitHub），任何人都能伪造任意用户的 JWT。
+# 未设置时退化为每次启动随机生成（重启后需要重新登录），并打印醒目告警。
+SECRET_KEY = os.environ.get("JWT_SECRET_KEY")
+if not SECRET_KEY:
+    import secrets
+    SECRET_KEY = secrets.token_urlsafe(48)
+    print("⚠️  未设置环境变量 JWT_SECRET_KEY，已临时生成随机密钥；"
+          "服务重启后所有 token 失效。请在 backend/.env 中配置 JWT_SECRET_KEY。")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 REFRESH_TOKEN_EXPIRE_DAYS = 7

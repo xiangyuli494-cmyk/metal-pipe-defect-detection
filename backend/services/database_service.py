@@ -333,21 +333,25 @@ class DatabaseService:
         
         try:
             with self.connection.cursor() as cursor:
+                # 注意：batch_detections 表只有 username，没有 user_id 列。
+                # 修复前的 SQL 用 `ON bd.user_id = u.id` 会抛 Unknown column，
+                # 整个查询被 except 吞掉返回 []，导致批量详情永远 404。
+                # 这里改为按 username 关联 users 表。
                 if user_id:
                     sql = """
-                        SELECT bd.*, u.username, u.full_name 
+                        SELECT bd.*, u.username, u.full_name
                         FROM batch_detections bd
-                        LEFT JOIN users u ON bd.user_id = u.id
-                        WHERE bd.user_id = %s
+                        LEFT JOIN users u ON u.username = bd.username
+                        WHERE u.id = %s
                         ORDER BY bd.created_at DESC
                         LIMIT %s OFFSET %s
                     """
                     cursor.execute(sql, (user_id, limit, offset))
                 else:
                     sql = """
-                        SELECT bd.*, u.username, u.full_name 
+                        SELECT bd.*, u.username, u.full_name
                         FROM batch_detections bd
-                        LEFT JOIN users u ON bd.user_id = u.id
+                        LEFT JOIN users u ON u.username = bd.username
                         ORDER BY bd.created_at DESC
                         LIMIT %s OFFSET %s
                     """
@@ -524,8 +528,8 @@ class DatabaseService:
             return None
 
         try:
-            from passlib.hash import bcrypt as bcrypt_hash
-            password_hash = bcrypt_hash.hash(user_data['password'])
+            from services.password_util import hash_password
+            password_hash = hash_password(user_data['password'])
 
             with self.connection.cursor() as cursor:
                 sql = """
@@ -624,8 +628,8 @@ class DatabaseService:
             return False
 
         try:
-            from passlib.hash import bcrypt as bcrypt_hash
-            password_hash = bcrypt_hash.hash(new_password)
+            from services.password_util import hash_password
+            password_hash = hash_password(new_password)
 
             with self.connection.cursor() as cursor:
                 sql = "UPDATE users SET password_hash = %s, updated_at = NOW() WHERE id = %s"
@@ -681,17 +685,9 @@ class DatabaseService:
 
                 stored_hash = row['password_hash']
 
-                # 1. 尝试 bcrypt
-                try:
-                    from passlib.hash import bcrypt as bcrypt_hash
-                    if stored_hash.startswith('$2'):
-                        return bcrypt_hash.verify(current_password, stored_hash)
-                except Exception:
-                    pass
-
-                # 2. 回退 MD5
-                import hashlib
-                return stored_hash == hashlib.md5(current_password.encode()).hexdigest()
+                # bcrypt（$2a/$2b/$2y）为主，MD5 为历史遗留回退
+                from services.password_util import verify_password
+                return verify_password(current_password, stored_hash)
 
         except Exception as e:
             print(f"❌ 验证密码失败: {e}")
@@ -721,33 +717,22 @@ class DatabaseService:
                     return None
 
                 stored_hash = user['password_hash']
-                verified = False
 
-                # 1. 尝试 bcrypt 验证
-                try:
-                    from passlib.hash import bcrypt as bcrypt_hash
-                    if stored_hash.startswith('$2'):
-                        verified = bcrypt_hash.verify(password, stored_hash)
-                except Exception:
-                    pass
+                from services.password_util import verify_password, hash_password, needs_upgrade
+                verified = verify_password(password, stored_hash)
 
-                # 2. bcrypt 失败则回退 MD5
-                if not verified:
-                    import hashlib
-                    md5_hash = hashlib.md5(password.encode()).hexdigest()
-                    if stored_hash == md5_hash:
-                        verified = True
-                        # 自动升级为 bcrypt
-                        try:
-                            from passlib.hash import bcrypt as bcrypt_hash
-                            new_hash = bcrypt_hash.hash(password)
-                            cursor.execute(
-                                "UPDATE users SET password_hash = %s WHERE id = %s",
-                                (new_hash, user['id'])
-                            )
-                            self.connection.commit()
-                        except Exception:
-                            pass
+                # 旧格式（MD5）校验通过后，自动升级为 bcrypt
+                if verified and needs_upgrade(stored_hash):
+                    try:
+                        new_hash = hash_password(password)
+                        cursor.execute(
+                            "UPDATE users SET password_hash = %s WHERE id = %s",
+                            (new_hash, user['id'])
+                        )
+                        self.connection.commit()
+                        print(f"🔑 用户 {username} 的密码哈希已升级为 bcrypt")
+                    except Exception as upgrade_err:
+                        print(f"⚠️ 密码哈希升级失败（不影响本次登录）: {upgrade_err}")
 
                 if not verified:
                     return None

@@ -177,8 +177,11 @@ const SystemSettingsPage: React.FC = () => {
       // 从后端获取模型状态
       const modelStatus = await apiService.getModelStatus().catch(() => null);
 
-      // 获取系统磁盘使用情况（不需要认证）
-      const diskUsage = await fetch('/api/system/disk').then(r => r.json()).catch(() => ({ data: { usage: 45 } }));
+      // 获取系统磁盘使用情况（接口已加鉴权，需带上 JWT）
+      const diskToken = localStorage.getItem('accessToken');
+      const diskUsage = await fetch('/api/system/disk', {
+        headers: diskToken ? { Authorization: `Bearer ${diskToken}` } : {},
+      }).then(r => r.json()).catch(() => ({ data: { usage: 45 } }));
 
       setSystemStatus({
         cpu: Math.floor(Math.random() * 30) + 20,

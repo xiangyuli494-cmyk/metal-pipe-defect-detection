@@ -178,8 +178,9 @@ class DetectionService:
                         return record
                     return None
             finally:
+                # 修复：此前 finally 里写了 `return None`，会覆盖 try 中的
+                # `return record`，导致所有记录详情恒返回 None（页面永远 404）
                 conn.close()
-                return None
 
     async def create_detection_record(self, data: Dict[str, Any]) -> Dict[str, Any]:
         """创建检测记录"""
@@ -440,10 +441,13 @@ class DetectionService:
                         VALUES (%s, %s, %s, %s, NOW())
                     """, (
                         batch_id,
-                        data.get('user_id', 'unknown'),
+                        data.get('username') or data.get('user_id') or 'unknown',
                         data.get('total_files', 0),
                         'pending'
                     ))
+                    # 修复：此前缺少 commit，INSERT 在连接关闭时被回滚，
+                    # 批次记录从未真正入库 —— 详情接口恒 404、进度接口恒返回 null
+                    conn.commit()
                     batch_data['id'] = batch_id
                     return batch_data
             finally:

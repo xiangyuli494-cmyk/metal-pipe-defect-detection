@@ -464,6 +464,28 @@ export function useCameraDetection(options: CameraDetectionOptions): UseCameraDe
     }
   }, [isDetecting, isPaused, runDetection, detectInterval, getVideoElement]);
 
+  // 停止检测（必须声明在 startDetection 之前：
+  // startDetection 的 useCallback 依赖数组会在渲染时读取 stopDetection，
+  // 声明在后会触发 TDZ 错误，导致摄像头页面一打开就崩溃）
+  const stopDetection = useCallback(() => {
+    stopRequestedRef.current = true;
+    setIsDetecting(false);
+    setIsPaused(false);
+    setFps(0);
+
+    if (detectTimerRef.current) {
+      clearTimeout(detectTimerRef.current);
+      detectTimerRef.current = null;
+    }
+
+    if (autoCaptureTimerRef.current) {
+      clearTimeout(autoCaptureTimerRef.current);
+      autoCaptureTimerRef.current = null;
+    }
+
+    console.log('[CameraDetection] 检测已停止');
+  }, []);
+
   // 开始检测
   const startDetection = useCallback((
     videoEl: HTMLVideoElement | HTMLImageElement | null,
@@ -501,26 +523,6 @@ export function useCameraDetection(options: CameraDetectionOptions): UseCameraDe
     // 启动检测循环
     detectTimerRef.current = setTimeout(detectLoop, 500);  // 首次延迟500ms
   }, [sourceType, detectInterval, autoCaptureInterval, detectLoop, stopDetection, getVideoElement]);
-
-  // 停止检测
-  const stopDetection = useCallback(() => {
-    stopRequestedRef.current = true;
-    setIsDetecting(false);
-    setIsPaused(false);
-    setFps(0);
-
-    if (detectTimerRef.current) {
-      clearTimeout(detectTimerRef.current);
-      detectTimerRef.current = null;
-    }
-
-    if (autoCaptureTimerRef.current) {
-      clearTimeout(autoCaptureTimerRef.current);
-      autoCaptureTimerRef.current = null;
-    }
-
-    console.log('[CameraDetection] 检测已停止');
-  }, []);
 
   // 切换暂停
   const togglePause = useCallback(() => {

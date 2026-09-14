@@ -45,6 +45,12 @@ import {
 } from '../services/VideoDetectionService';
 import apiService from '../services/ApiService';
 
+/** 视频实时检测接口已加鉴权，统一带上 JWT */
+const videoAuthHeaders = (): Record<string, string> => {
+  const token = localStorage.getItem('accessToken');
+  return token ? { Authorization: `Bearer ${token}` } : {};
+};
+
 // 缺陷类型颜色映射
 const DEFECT_COLOR_MAP: Record<string, string> = {
   '凸起': '#ef4444',
@@ -256,7 +262,8 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
 
       try {
         const response = await fetch(
-          `${apiService.getBaseUrl()}/api/video/realtime/frame?session_id=${realtimeSessionId}&action=play`
+          `${apiService.getBaseUrl()}/api/video/realtime/frame?session_id=${realtimeSessionId}&action=play`,
+          { headers: videoAuthHeaders() }
         );
 
         if (!response.ok) {
@@ -538,7 +545,8 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
     try {
       // 每次都使用 'play' action，让后端自动播放
       const response = await fetch(
-        `${apiService.getBaseUrl()}/api/video/realtime/frame?session_id=${realtimeSessionId}&action=play`
+        `${apiService.getBaseUrl()}/api/video/realtime/frame?session_id=${realtimeSessionId}&action=play`,
+        { headers: videoAuthHeaders() }
       );
       
       if (!response.ok) {
@@ -692,7 +700,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
       try {
         await fetch(`${apiService.getBaseUrl()}/api/video/realtime/stop`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', ...videoAuthHeaders() },
           body: JSON.stringify({ session_id: realtimeSessionId })
         });
       } catch (error) {
@@ -716,7 +724,10 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
     // 调用后端暂停
     if (realtimeSessionId) {
       try {
-        await fetch(`${apiService.getBaseUrl()}/api/video/realtime/frame?session_id=${realtimeSessionId}&action=pause`);
+        await fetch(
+          `${apiService.getBaseUrl()}/api/video/realtime/frame?session_id=${realtimeSessionId}&action=pause`,
+          { headers: videoAuthHeaders() }
+        );
       } catch (e) {
         console.error('[RealtimeMode] Pause error:', e);
       }
@@ -821,6 +832,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
       
       const response = await fetch(`${apiService.getBaseUrl()}/api/video/realtime/start`, {
         method: 'POST',
+        headers: videoAuthHeaders(),
         body: formData,
       });
       
@@ -1878,9 +1890,8 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
                             保存历史
                           </button>
                         )}
-                        )}
                       </div>
-                      
+
                       {/* 进度条 */}
                       <div className="flex-1 mx-4">
                         <input
@@ -1893,7 +1904,8 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
                             setRealtimeCurrentFrame(frame);
                             try {
                               await fetch(
-                                `${apiService.getBaseUrl()}/api/video/realtime/frame?session_id=${realtimeSessionId}&action=seek&frame_index=${frame}`
+                                `${apiService.getBaseUrl()}/api/video/realtime/frame?session_id=${realtimeSessionId}&action=seek&frame_index=${frame}`,
+                                { headers: videoAuthHeaders() }
                               );
                             } catch (err) {
                               console.error('Seek error:', err);

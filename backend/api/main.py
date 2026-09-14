@@ -53,10 +53,15 @@ app = FastAPI(
 )
 
 # CORS配置
+# 生产环境请通过环境变量 CORS_ORIGINS 指定白名单（逗号分隔），例如
+#   CORS_ORIGINS=http://localhost:3015,http://127.0.0.1:3015
+# 本项目使用 Authorization: Bearer <token> 传递身份，不依赖 Cookie，
+# 因此不再开启 allow_credentials（与 allow_origins=["*"] 同时使用本身就是非法组合）。
+_cors_origins = [o.strip() for o in os.environ.get("CORS_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=_cors_origins,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -97,6 +102,62 @@ detection_service = DetectionService()
 model_service = ModelService()
 
 
+@app.on_event("startup")
+async def _auto_load_default_model():
+    """启动时自动加载默认模型权重。
+
+    修复前：服务启动后模型一直是未加载状态，`/api/model/predict` 会把
+    "模型未加载" 包装成 200 + 0 缺陷返回，用户以为检测成功，实际什么都没跑。
+    """
+    # 优先使用仓库自带的权重（clone 即可运行，不依赖外部绝对路径），
+    # 其次才是环境变量 MODEL_PATH 指定的外部权重
+    candidates = [
+        project_root / "models_weights" / "best.pt",
+        project_root / "backend" / "models_weights" / "best.pt",
+        project_root / "models" / "best.pt",
+    ]
+    # 环境变量指定的外部权重作为兜底
+    env_path = os.environ.get('MODEL_PATH', '')
+    if env_path:
+        candidates.append(Path(env_path))
+    for cand in candidates:
+        try:
+            if cand and cand.exists():
+                res = model_service.load_model(str(cand))
+                if res.get('success'):
+                    print(f"✅ 启动时自动加载模型成功: {cand}")
+                    return
+                print(f"⚠️ 自动加载模型失败 {cand}: {res.get('message')}")
+        except Exception as e:
+            print(f"⚠️ 自动加载模型异常 {cand}: {e}")
+    print("⚠️ 未找到可用的默认模型权重，检测功能不可用；"
+          "请在「模型管理」中手动加载，或设置环境变量 MODEL_PATH 指向 .pt 文件")
+
+
+def _match_batch_id(value, batch_id) -> bool:
+    """批量任务ID 既有自增整数也有 UUID 字符串，比较时统一按字符串处理。
+
+    修复前 `batch_id: int` 的类型声明会让 UUID 批次直接 422，
+    导致「批量检测详情」页面永远打不开。
+    """
+    if value is None or batch_id is None:
+        return False
+    return str(value) == str(batch_id)
+
+
+def _resolve_user_id(user_id, current_user: dict):
+    """把请求参数里的 user_id 收敛到当前登录用户，防止越权查看/操作他人数据。
+
+    规则：
+    - 管理员：可以显式指定 user_id（不传则视为查询全部 / 自身，由调用方决定）
+    - 其他角色：一律强制使用 JWT 里的 user_id，忽略外部传入值
+    """
+    if current_user.get("role") == "admin" and user_id:
+        return int(user_id) if str(user_id).isdigit() else user_id
+    uid = current_user.get("user_id")
+    return int(uid) if uid and str(uid).isdigit() else None
+
+
 # ============ 数据模型 ============
 
 class LoginRequest(BaseModel):
@@ -108,7 +169,6 @@ class DetectionRequest(BaseModel):
     user_id: Optional[str] = None
     username: Optional[str] = None
     confidence_threshold: float = 0.5
-    iou_threshold: float = 0.45
     iou_threshold: float = 0.45
 
 
@@ -220,6 +280,8 @@ async def refresh_token(request: RefreshRequest):
         access_token = create_access_token(new_token_data)
         return {"success": True, "data": {"access_token": access_token}}
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -246,6 +308,95 @@ async def get_detection_records(
             offset=offset
         )
         return {"success": True, "data": records}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============ 数据导出API ============
+# 注意：/export 必须注册在 /api/detection-records/{record_id} 之前，
+# 否则 "export" 会被当作 record_id 命中上面的路由，导出接口永远返回 404。
+
+@app.get("/api/detection-records/export")
+async def export_detection_records(
+    detection_type: Optional[str] = None,
+    format: str = 'csv',
+    user_id: Optional[str] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """
+    导出检测记录数据
+    - format: csv 或 json
+    - 非管理员只能导出自己的记录
+    """
+    try:
+        # admin 可指定 username，其他角色强制导出自己的
+        filter_username = user_id if current_user["role"] == "admin" and user_id else current_user["username"]
+        records = await detection_service.get_detection_records(
+            user_id=filter_username,
+            detection_type=detection_type,
+            limit=10000  # 导出大量记录
+        )
+
+        if format == 'json':
+            # 返回JSON格式
+            return {
+                "success": True,
+                "data": records,
+                "count": len(records)
+            }
+        else:
+            # 返回CSV格式
+            import csv
+            import io
+
+            output = io.StringIO()
+
+            # CSV列定义
+            fieldnames = [
+                'id', 'detection_id', 'username', 'original_filename',
+                'detection_type', 'defect_count', 'confidence',
+                'processing_time', 'status', 'created_at',
+                'image_url', 'result_image_url'
+            ]
+
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+
+            for record in records:
+                row = {
+                    'id': record.get('id', ''),
+                    'detection_id': record.get('detection_id', ''),
+                    'username': record.get('username', ''),
+                    'original_filename': record.get('original_filename', ''),
+                    'detection_type': record.get('detection_type', ''),
+                    'defect_count': record.get('defect_count', 0),
+                    'confidence': record.get('confidence', 0),
+                    'processing_time': record.get('processing_time', 0),
+                    'status': record.get('status', ''),
+                    'created_at': record.get('created_at', ''),
+                    'image_url': record.get('image_url', ''),
+                    'result_image_url': record.get('result_image_url', '')
+                }
+                writer.writerow(row)
+
+            csv_content = output.getvalue()
+
+            # 返回CSV文件
+            from fastapi.responses import StreamingResponse
+
+            return StreamingResponse(
+                io.StringIO(csv_content),
+                media_type="text/csv",
+                headers={"Content-Disposition": f"attachment; filename=detection_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"}
+            )
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -258,6 +409,10 @@ async def get_detection_record(record_id: str, current_user: dict = Depends(get_
         if not record:
             raise HTTPException(status_code=404, detail="记录不存在")
         return {"success": True, "data": record}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -271,6 +426,10 @@ async def create_detection_record(
     try:
         record = await detection_service.create_detection_record(request.dict())
         return {"success": True, "data": record}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -285,6 +444,10 @@ async def upload_detection_image(
     try:
         result = await detection_service.process_image(record_id, file)
         return {"success": True, "data": result}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -298,6 +461,10 @@ async def delete_detection_record(
     try:
         await detection_service.delete_detection_record(record_id)
         return {"success": True, "message": "记录已删除"}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -320,6 +487,10 @@ async def get_batch_detections(
             offset=offset
         )
         return {"success": True, "data": batches}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -331,8 +502,16 @@ async def create_batch_detection(
 ):
     """创建批量检测任务"""
     try:
-        batch = await detection_service.create_batch_detection(request.dict())
+        data = request.dict()
+        # 归属一律取自 JWT，忽略请求体里可能伪造的 user_id
+        data['user_id'] = current_user["user_id"]
+        data['username'] = current_user["username"]
+        batch = await detection_service.create_batch_detection(data)
         return {"success": True, "data": batch}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -347,6 +526,10 @@ async def upload_batch_files(
     try:
         result = await detection_service.process_batch_files(batch_id, files)
         return {"success": True, "data": result}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -360,6 +543,10 @@ async def get_batch_status(
     try:
         status = await detection_service.get_batch_status(batch_id)
         return {"success": True, "data": status}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -386,6 +573,10 @@ async def get_camera_logs(
             offset=offset
         )
         return {"success": True, "data": logs}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -446,6 +637,10 @@ async def create_camera_log(
 
         log = await detection_service.create_camera_log(log_data)
         return {"success": True, "data": log}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -459,6 +654,10 @@ async def save_camera_logs(
     try:
         result = await detection_service.save_camera_logs(request.log_ids, current_user["user_id"])
         return {"success": True, "data": result}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -472,6 +671,10 @@ async def delete_camera_log(
     try:
         await detection_service.delete_camera_log(log_id)
         return {"success": True, "message": "日志已删除"}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -583,6 +786,8 @@ async def get_statistics(
             }
         }
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -599,6 +804,10 @@ async def get_daily_statistics(
         filter_user_id = user_id if current_user["role"] == "admin" and user_id else current_user["user_id"]
         stats = await detection_service.get_daily_statistics(filter_user_id, days)
         return {"success": True, "data": stats}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -613,6 +822,10 @@ async def get_defect_type_statistics(
         filter_user_id = user_id if current_user["role"] == "admin" and user_id else current_user["user_id"]
         stats = await detection_service.get_defect_type_statistics(filter_user_id)
         return {"success": True, "data": stats}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -625,6 +838,10 @@ async def get_settings(current_user: dict = Depends(get_current_user)):
     try:
         settings = await detection_service.get_settings()
         return {"success": True, "data": settings}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -635,6 +852,10 @@ async def get_setting(key: str, current_user: dict = Depends(get_current_user)):
     try:
         setting = await detection_service.get_setting(key)
         return {"success": True, "data": setting}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -649,6 +870,10 @@ async def update_setting(
     try:
         setting = await detection_service.update_setting(key, value.get('value'))
         return {"success": True, "data": setting}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -661,6 +886,10 @@ async def get_model_status(current_user: dict = Depends(get_current_user)):
     try:
         status = model_service.get_status()
         return {"success": True, "data": status}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -704,6 +933,8 @@ async def load_model(
 
         return {"success": True, "data": result}
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -801,6 +1032,10 @@ async def get_available_models(current_user: dict = Depends(get_current_user)):
                     models.append(model_info)
 
         return {"success": True, "data": models}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -869,6 +1104,8 @@ async def upload_model(
         }
 
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -906,6 +1143,8 @@ async def rename_model(
         }
 
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -936,6 +1175,8 @@ async def delete_model(
         }
 
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -972,6 +1213,14 @@ async def predict(
 
         # 使用文件路径进行预测
         result = await model_service.predict_from_path(str(file_path), file.filename)
+
+        # 推理失败（如模型未加载）必须显式报错。
+        # 修复前这里会继续往下走，最终返回 200 + 0 缺陷，前端显示"检测完成"但什么都没做。
+        if not result.get('success'):
+            raise HTTPException(
+                status_code=503,
+                detail=result.get('message', '模型推理失败，请先在「模型管理」中加载模型')
+            )
 
         # 获取标注图片（base64格式）并保存为文件
         annotated_base64 = result.get('result', {}).get('annotated_image')
@@ -1051,6 +1300,10 @@ async def predict(
                 result['data']['result']['annotated_image'] = result_image_url
         
         return {"success": True, "data": result}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1066,6 +1319,8 @@ async def predict_batch(
     current_user: dict = Depends(require_role("admin", "operator")),
 ):
     """执行批量预测并保存记录到数据库"""
+    if not model_service.is_loaded:
+        raise HTTPException(status_code=503, detail="模型未加载，请先在「模型管理」中加载模型")
     try:
         # 创建批量检测记录
         uid = current_user["user_id"]
@@ -1143,8 +1398,9 @@ async def predict_batch(
                 if result.get('success') and db_service.is_connected() and batch_id:
                     try:
                         record_data = {
-                            'user_id': int(user_id) if user_id and user_id.isdigit() else None,
-                            'username': username,
+                            # 用 JWT 身份而非请求参数，避免伪造归属
+                            'user_id': int(uid) if uid and str(uid).isdigit() else None,
+                            'username': uname or uid or '未知操作员',
                             'detection_type': 'batch',
                             'original_filename': file.filename,
                             'defect_count': result.get('result', {}).get('count', 0),
@@ -1205,31 +1461,43 @@ async def predict_batch(
                 print(f"⚠️ 更新批量检测记录时出错: {update_error}")
         
         return {"success": True, "data": results, "batch_id": batch_id}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/batch-detections/{batch_id}")
-async def get_batch_detection(batch_id: int):
+async def get_batch_detection(
+    batch_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """获取单个批量检测记录及其详情"""
     try:
         if not db_service.is_connected():
             raise HTTPException(status_code=500, detail="数据库未连接")
-        
-        # 获取批量记录
-        batches = db_service.get_batch_detections(limit=1)
+
+        # 获取批量记录（limit 放开，否则只能匹配到最新一条）
+        batches = db_service.get_batch_detections(limit=1000)
         batch_record = None
+        # 自增主键 id 与业务 batch_id(UUID) 都要匹配，前端两种都会传
         for batch in batches:
-            if batch.get('id') == batch_id:
+            if (_match_batch_id(batch.get('id'), batch_id)
+                    or _match_batch_id(batch.get('batch_id'), batch_id)):
                 batch_record = batch
                 break
-        
+
         if not batch_record:
             raise HTTPException(status_code=404, detail="批量记录未找到")
-        
-        # 获取该批次的检测记录
+
+        # 获取该批次的检测记录（同样兼容两种 ID 形式）
+        biz_id = str(batch_record.get('batch_id') or batch_id)
         records = db_service.get_detection_records()
-        batch_records = [r for r in records if r.get('batch_id') == batch_id]
+        batch_records = [r for r in records
+                         if _match_batch_id(r.get('batch_id'), batch_id)
+                         or _match_batch_id(r.get('batch_id'), biz_id)]
         
         return {
             "success": True,
@@ -1239,6 +1507,10 @@ async def get_batch_detection(batch_id: int):
                 "record_count": len(batch_records)
             }
         }
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1247,7 +1519,8 @@ async def get_batch_detection(batch_id: int):
 async def get_grouped_batch_records(
     user_id: Optional[int] = None,
     limit: int = 50,
-    offset: int = 0
+    offset: int = 0,
+    current_user: dict = Depends(get_current_user),
 ):
     """获取按批次分组的检测记录（用于批量检测历史记录的批次展示）
     
@@ -1270,7 +1543,12 @@ async def get_grouped_batch_records(
     try:
         if not db_service.is_connected():
             raise HTTPException(status_code=500, detail="数据库未连接")
-        
+
+        # 非管理员强制只看自己的数据
+        if current_user["role"] != "admin":
+            uid = current_user["user_id"]
+            user_id = int(uid) if uid and str(uid).isdigit() else user_id
+
         # 获取所有批量检测的检测记录
         all_records = db_service.get_detection_records(user_id=user_id, detection_type='batch', limit=1000, offset=0)
         
@@ -1324,20 +1602,27 @@ async def get_grouped_batch_records(
         
         return {"success": True, "data": paginated, "count": total}
         
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/batch-records/{batch_id}")
-async def get_batch_record_detail(batch_id: int):
+async def get_batch_record_detail(
+    batch_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """获取某个批次的详细记录（包含所有图片的详细信息）"""
     try:
         if not db_service.is_connected():
             raise HTTPException(status_code=500, detail="数据库未连接")
-        
+
         # 获取该批次的检测记录
         all_records = db_service.get_detection_records(detection_type='batch', limit=1000)
-        records = [r for r in all_records if r.get('batch_id') == batch_id]
+        records = [r for r in all_records if _match_batch_id(r.get('batch_id'), batch_id)]
         
         if not records:
             raise HTTPException(status_code=404, detail="批次记录未找到")
@@ -1358,6 +1643,8 @@ async def get_batch_record_detail(batch_id: int):
             }
         }
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1366,7 +1653,10 @@ async def get_batch_record_detail(batch_id: int):
 # ============ 历史记录标注图片API ============
 
 @app.get("/api/detection-records/{record_id}/annotated-image")
-async def get_annotated_image(record_id: str):
+async def get_annotated_image(
+    record_id: str,
+    current_user: dict = Depends(get_current_user),
+):
     """
     获取历史记录的标注图片（根据缺陷数据重新绘制标注框）
     """
@@ -1492,88 +1782,20 @@ async def get_annotated_image(record_id: str):
             }
         }
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# ============ 数据导出API ============
-
-@app.get("/api/detection-records/export")
-async def export_detection_records(
-    detection_type: Optional[str] = None,
-    format: str = 'csv',
-    user_id: Optional[str] = None
-):
-    """
-    导出检测记录数据
-    - format: csv 或 json
-    """
-    try:
-        records = await detection_service.get_detection_records(
-            user_id=user_id,
-            detection_type=detection_type,
-            limit=10000  # 导出大量记录
-        )
-        
-        if format == 'json':
-            # 返回JSON格式
-            return {
-                "success": True,
-                "data": records,
-                "count": len(records)
-            }
-        else:
-            # 返回CSV格式
-            import csv
-            import io
-            
-            output = io.StringIO()
-            
-            # CSV列定义
-            fieldnames = [
-                'id', 'detection_id', 'username', 'original_filename',
-                'detection_type', 'defect_count', 'confidence',
-                'processing_time', 'status', 'created_at',
-                'image_url', 'result_image_url'
-            ]
-            
-            writer = csv.DictWriter(output, fieldnames=fieldnames)
-            writer.writeheader()
-            
-            for record in records:
-                row = {
-                    'id': record.get('id', ''),
-                    'detection_id': record.get('detection_id', ''),
-                    'username': record.get('username', ''),
-                    'original_filename': record.get('original_filename', ''),
-                    'detection_type': record.get('detection_type', ''),
-                    'defect_count': record.get('defect_count', 0),
-                    'confidence': record.get('confidence', 0),
-                    'processing_time': record.get('processing_time', 0),
-                    'status': record.get('status', ''),
-                    'created_at': record.get('created_at', ''),
-                    'image_url': record.get('image_url', ''),
-                    'result_image_url': record.get('result_image_url', '')
-                }
-                writer.writerow(row)
-            
-            csv_content = output.getvalue()
-            
-            # 返回CSV文件
-            from fastapi.responses import StreamingResponse
-            
-            return StreamingResponse(
-                io.StringIO(csv_content),
-                media_type="text/csv",
-                headers={"Content-Disposition": f"attachment; filename=detection_records_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"}
-            )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 @app.get("/api/detection-records/{record_id}/export-detail")
-async def export_detection_detail(record_id: str, format: str = 'json'):
+async def export_detection_detail(
+    record_id: str,
+    format: str = 'json',
+    current_user: dict = Depends(get_current_user),
+):
     """
     导出单条检测记录的详细信息
     """
@@ -1656,6 +1878,8 @@ async def export_detection_detail(record_id: str, format: str = 'json'):
                 headers={"Content-Disposition": f"attachment; filename=detection_detail_{record_id}.csv"}
             )
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1696,6 +1920,10 @@ async def get_users(
             raise HTTPException(status_code=500, detail="数据库未连接")
         users = db_service.get_users(search=search, role=role, limit=limit, offset=offset)
         return {"success": True, "data": users, "count": len(users)}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1712,6 +1940,8 @@ async def create_user(
             return {"success": True, "data": {"id": user_id}, "message": "用户创建成功"}
         raise HTTPException(status_code=400, detail="用户创建失败")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1731,13 +1961,18 @@ async def update_user(
             return {"success": True, "message": "用户更新成功"}
         raise HTTPException(status_code=404, detail="用户不存在或更新失败")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/users/{user_id}")
-async def delete_user(user_id: int):
+async def delete_user(
+    user_id: int,
+    current_user: dict = Depends(require_role("admin")),
+):
     """删除用户"""
     try:
         success = db_service.delete_user(user_id)
@@ -1745,13 +1980,18 @@ async def delete_user(user_id: int):
             return {"success": True, "message": "用户已删除"}
         raise HTTPException(status_code=404, detail="用户不存在或删除失败")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.patch("/api/users/{user_id}/status")
-async def toggle_user_status(user_id: int):
+async def toggle_user_status(
+    user_id: int,
+    current_user: dict = Depends(require_role("admin")),
+):
     """切换用户启用/停用状态"""
     try:
         new_status = db_service.toggle_user_status(user_id)
@@ -1763,13 +2003,19 @@ async def toggle_user_status(user_id: int):
             }
         raise HTTPException(status_code=404, detail="用户不存在")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.patch("/api/users/{user_id}/password")
-async def reset_password(user_id: int, request: ResetPasswordRequest):
+async def reset_password(
+    user_id: int,
+    request: ResetPasswordRequest,
+    current_user: dict = Depends(require_role("admin")),
+):
     """重置用户密码"""
     try:
         success = db_service.reset_user_password(user_id, request.new_password)
@@ -1777,6 +2023,8 @@ async def reset_password(user_id: int, request: ResetPasswordRequest):
             return {"success": True, "message": "密码重置成功"}
         raise HTTPException(status_code=404, detail="用户不存在")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1800,14 +2048,17 @@ class ChangePasswordRequest(BaseModel):
 
 
 @app.put("/api/profile")
-async def update_profile(request: UpdateProfileRequest):
-    """更新当前用户资料"""
+async def update_profile(
+    request: UpdateProfileRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """更新当前用户资料（身份一律以 JWT 为准，忽略请求体中的 user_id）"""
     try:
         if not db_service.is_connected():
             raise HTTPException(status_code=500, detail="数据库未连接")
 
-        # 从请求体获取user_id
-        uid = request.user_id
+        # 身份以 JWT 为准，杜绝伪造 user_id 改他人资料
+        uid = current_user["user_id"]
         if not uid:
             raise HTTPException(status_code=401, detail="未登录：缺少用户ID")
 
@@ -1824,19 +2075,24 @@ async def update_profile(request: UpdateProfileRequest):
             return {"success": True, "message": "个人资料已更新"}
         raise HTTPException(status_code=404, detail="用户不存在或更新失败")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.put("/api/profile/password")
-async def change_password(request: ChangePasswordRequest):
-    """修改当前用户密码"""
+async def change_password(
+    request: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """修改当前用户密码（身份一律以 JWT 为准，忽略请求体中的 user_id）"""
     try:
         if not db_service.is_connected():
             raise HTTPException(status_code=500, detail="数据库未连接")
 
-        uid = request.user_id
+        uid = current_user["user_id"]
         if not uid:
             raise HTTPException(status_code=401, detail="未登录：缺少用户ID")
 
@@ -1851,6 +2107,8 @@ async def change_password(request: ChangePasswordRequest):
             return {"success": True, "message": "密码修改成功"}
         raise HTTPException(status_code=404, detail="用户不存在")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1859,13 +2117,15 @@ async def change_password(request: ChangePasswordRequest):
 @app.post("/api/profile/avatar")
 async def upload_avatar(
     file: UploadFile = File(...),
-    user_id: Optional[int] = Form(None)
+    current_user: dict = Depends(get_current_user),
 ):
-    """上传用户头像"""
+    """上传用户头像（身份一律以 JWT 为准，忽略表单里的 user_id）"""
     try:
         if not db_service.is_connected():
             raise HTTPException(status_code=500, detail="数据库未连接")
 
+        uid = current_user["user_id"]
+        user_id = int(uid) if uid and str(uid).isdigit() else None
         if not user_id:
             raise HTTPException(status_code=401, detail="未登录：缺少用户ID")
 
@@ -1898,6 +2158,8 @@ async def upload_avatar(
         raise HTTPException(status_code=404, detail="用户不存在")
 
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -1917,13 +2179,16 @@ class CreateNotificationRequest(BaseModel):
 async def get_notifications(
     user_id: Optional[int] = None,
     limit: int = 50,
-    offset: int = 0
+    offset: int = 0,
+    current_user: dict = Depends(get_current_user),
 ):
-    """获取通知列表"""
+    """获取通知列表（非管理员只能看自己的）"""
     try:
         if not db_service.is_connected():
             raise HTTPException(status_code=500, detail="数据库未连接")
-        
+
+        user_id = _resolve_user_id(user_id, current_user)
+
         notifications = db_service.get_notifications(user_id=user_id, limit=limit, offset=offset)
         unread_count = db_service.get_unread_count(user_id=user_id)
         return {
@@ -1932,29 +2197,44 @@ async def get_notifications(
             "count": len(notifications),
             "unread_count": unread_count
         }
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/api/notifications")
-async def create_notification(request: CreateNotificationRequest):
-    """创建通知"""
+async def create_notification(
+    request: CreateNotificationRequest,
+    current_user: dict = Depends(get_current_user),
+):
+    """创建通知（非管理员只能给自己创建）"""
     try:
         if not db_service.is_connected():
             raise HTTPException(status_code=500, detail="数据库未连接")
-        
-        notification_id = db_service.create_notification(request.dict())
+
+        payload = request.dict()
+        payload['user_id'] = _resolve_user_id(payload.get('user_id'), current_user)
+
+        notification_id = db_service.create_notification(payload)
         if notification_id:
             return {"success": True, "data": {"id": notification_id}, "message": "通知创建成功"}
         raise HTTPException(status_code=400, detail="通知创建失败")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.patch("/api/notifications/{notification_id}/read")
-async def mark_notification_read(notification_id: int):
+async def mark_notification_read(
+    notification_id: int,
+    current_user: dict = Depends(get_current_user),
+):
     """标记通知为已读"""
     try:
         success = db_service.mark_notification_read(notification_id)
@@ -1962,27 +2242,37 @@ async def mark_notification_read(notification_id: int):
             return {"success": True, "message": "通知已标记为已读"}
         raise HTTPException(status_code=404, detail="通知不存在")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.patch("/api/notifications/read-all")
-async def mark_all_notifications_read(user_id: Optional[int] = None):
-    """标记所有通知为已读"""
+async def mark_all_notifications_read(
+    user_id: Optional[int] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """标记所有通知为已读（非管理员只影响自己的）"""
     try:
-        success = db_service.mark_all_notifications_read(user_id)
+        success = db_service.mark_all_notifications_read(_resolve_user_id(user_id, current_user))
         if success:
             return {"success": True, "message": "所有通知已标记为已读"}
         raise HTTPException(status_code=500, detail="操作失败")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/notifications/{notification_id}")
-async def delete_notification(notification_id: int):
+async def delete_notification(
+    notification_id: int,
+    current_user: dict = Depends(get_current_user),
+):
     """删除通知"""
     try:
         success = db_service.delete_notification(notification_id)
@@ -1990,31 +2280,45 @@ async def delete_notification(notification_id: int):
             return {"success": True, "message": "通知已删除"}
         raise HTTPException(status_code=404, detail="通知不存在")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/notifications")
-async def clear_notifications(user_id: Optional[int] = None):
-    """清除所有通知"""
+async def clear_notifications(
+    user_id: Optional[int] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """清除所有通知（非管理员只清自己的）"""
     try:
-        success = db_service.clear_notifications(user_id)
+        success = db_service.clear_notifications(_resolve_user_id(user_id, current_user))
         if success:
             return {"success": True, "message": "通知已清除"}
         raise HTTPException(status_code=500, detail="操作失败")
     except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/notifications/unread-count")
-async def get_unread_count(user_id: Optional[int] = None):
-    """获取未读通知数量"""
+async def get_unread_count(
+    user_id: Optional[int] = None,
+    current_user: dict = Depends(get_current_user),
+):
+    """获取未读通知数量（非管理员只统计自己的）"""
     try:
-        count = db_service.get_unread_count(user_id)
+        count = db_service.get_unread_count(_resolve_user_id(user_id, current_user))
         return {"success": True, "data": {"count": count}}
+    except HTTPException:
+        # 显式抛出的业务错误（400/401/403/404/503...）原样透传，
+        # 不再被统一吞成 500，便于前端给出准确提示
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -2022,7 +2326,7 @@ async def get_unread_count(user_id: Optional[int] = None):
 # ============ 系统状态API ============
 
 @app.get("/api/system/disk")
-async def get_disk_usage():
+async def get_disk_usage(current_user: dict = Depends(get_current_user)):
     """获取磁盘使用情况"""
     try:
         import shutil
@@ -2046,7 +2350,7 @@ async def get_disk_usage():
 
 
 @app.get("/api/system/status")
-async def get_system_status():
+async def get_system_status(current_user: dict = Depends(get_current_user)):
     """获取系统运行状态"""
     try:
         import shutil
@@ -2150,6 +2454,7 @@ def convert_video_to_browser_compatible(input_path: str, output_path: str) -> bo
 @app.post("/api/video/convert")
 async def convert_video(
     file: UploadFile = File(...),
+    current_user: dict = Depends(require_role("admin", "operator")),
 ):
     """
     上传视频并转换为浏览器兼容格式
@@ -2243,7 +2548,8 @@ async def detect_video_frame(
     confidence_threshold: float = Form(0.5),
     iou_threshold: float = Form(0.45),
     user_id: Optional[str] = Form(None),
-    username: Optional[str] = Form(None)
+    username: Optional[str] = Form(None),
+    current_user: dict = Depends(require_role("admin", "operator")),
 ):
     """
     单帧实时检测API - 用于边播放边检测
@@ -2340,7 +2646,8 @@ async def video_detect(
     confidence_threshold: float = Form(0.5),
     iou_threshold: float = Form(0.45),
     user_id: Optional[str] = Form(None),
-    username: Optional[str] = Form(None)
+    username: Optional[str] = Form(None),
+    current_user: dict = Depends(require_role("admin", "operator")),
 ):
     """
     视频抽帧检测
@@ -2523,7 +2830,8 @@ async def video_detect(
                     
                     # 构建记录数据
                     log_data = {
-                        'user_id': int(user_id) if user_id and user_id.isdigit() else None,
+                        # 身份以 JWT 为准，避免伪造 user_id 把记录挂到别人名下
+                        'user_id': int(current_user["user_id"]) if str(current_user.get("user_id") or "").isdigit() else None,
                         'source_type': 'video',
                         'source_name': file.filename or 'unknown',
                         'defect_type': detections[0].get('class', 'unknown') if detections else 'normal',
@@ -2576,13 +2884,24 @@ async def video_detect(
 video_stream_sessions: Dict[str, Dict] = {}
 
 
+def _get_owned_session(session_id: str, current_user: dict) -> Dict:
+    """按 session_id 取会话并校验归属（管理员可访问全部，其他人只能访问自己的）"""
+    session = video_stream_sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="会话不存在或已过期")
+    if current_user.get("role") != "admin" and str(session.get('owner')) != str(current_user.get("user_id")):
+        raise HTTPException(status_code=403, detail="无权访问该会话")
+    return session
+
+
 @app.post("/api/video/realtime/start")
 async def start_video_realtime(
     file: UploadFile = File(...),
     confidence_threshold: float = Form(0.5),
     iou_threshold: float = Form(0.45),
     user_id: Optional[str] = Form(None),
-    username: Optional[str] = Form(None)
+    username: Optional[str] = Form(None),
+    current_user: dict = Depends(require_role("admin", "operator")),
 ):
     """
     启动视频实时检测会话
@@ -2654,8 +2973,10 @@ async def start_video_realtime(
             'created_at': datetime.now().isoformat()
         }
         
+        # 绑定会话归属，防止其他人拿 session_id 串会话
+        session['owner'] = str(current_user["user_id"])
         video_stream_sessions[session_id] = session
-        
+
         print(f"[VideoRealtime] Session started: {session_id}, {total_frames} frames, {fps:.1f}fps, {width}x{height}")
         
         return {
@@ -2683,7 +3004,8 @@ async def start_video_realtime(
 async def get_video_realtime_frame(
     session_id: str,
     action: str = 'get',  # 'get' | 'play' | 'pause' | 'seek'
-    frame_index: int = 0
+    frame_index: int = 0,
+    current_user: dict = Depends(require_role("admin", "operator")),
 ):
     """
     获取视频实时检测帧
@@ -2707,12 +3029,9 @@ async def get_video_realtime_frame(
     import base64 as b64_mod
     import time as time_module
     
-    if session_id not in video_stream_sessions:
-        raise HTTPException(status_code=404, detail="会话不存在或已过期")
-    
-    session = video_stream_sessions[session_id]
+    session = _get_owned_session(session_id, current_user)
     video_path = session['video_path']
-    
+
     # 检查视频文件是否存在
     if not os.path.exists(video_path):
         raise HTTPException(status_code=404, detail="视频文件不存在")
@@ -2913,7 +3232,11 @@ async def get_video_realtime_frame(
 
 
 @app.post("/api/video/realtime/stop")
-async def stop_video_realtime(session_id: Optional[str] = None, body: Optional[dict] = None):
+async def stop_video_realtime(
+    session_id: Optional[str] = None,
+    body: Optional[dict] = None,
+    current_user: dict = Depends(require_role("admin", "operator")),
+):
     """
     停止视频实时检测会话
     
@@ -2927,14 +3250,12 @@ async def stop_video_realtime(session_id: Optional[str] = None, body: Optional[d
     actual_session_id = session_id
     if not actual_session_id and body and 'session_id' in body:
         actual_session_id = body['session_id']
-    
+
     if not actual_session_id:
         raise HTTPException(status_code=400, detail="缺少 session_id 参数")
-    
-    if actual_session_id not in video_stream_sessions:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    
-    session = video_stream_sessions[session_id]
+
+    # 校验会话归属（管理员可停任意会话）
+    session = _get_owned_session(actual_session_id, current_user)
     video_path = session.get('video_path')
     
     # 标记会话为停止
@@ -2949,24 +3270,24 @@ async def stop_video_realtime(session_id: Optional[str] = None, body: Optional[d
         except Exception as e:
             print(f"[VideoRealtime] Failed to delete temp video: {e}")
     
-    # 删除会话
-    del video_stream_sessions[session_id]
+    # 删除会话（修复：原代码用未校验的 session_id，body 传参时会 KeyError）
+    del video_stream_sessions[actual_session_id]
     
     return {
         "success": True,
-        "message": f"会话 {session_id} 已停止"
+        "message": f"会话 {actual_session_id} 已停止"
     }
 
 
 @app.get("/api/video/realtime/status")
-async def get_video_realtime_status(session_id: str):
+async def get_video_realtime_status(
+    session_id: str,
+    current_user: dict = Depends(require_role("admin", "operator")),
+):
     """
     获取视频实时检测会话状态
     """
-    if session_id not in video_stream_sessions:
-        raise HTTPException(status_code=404, detail="会话不存在")
-    
-    session = video_stream_sessions[session_id]
+    session = _get_owned_session(session_id, current_user)
     
     return {
         "success": True,
@@ -2984,5 +3305,6 @@ async def get_video_realtime_status(session_id: str):
 
 if __name__ == "__main__":
     import uvicorn
-    port = int(os.getenv('PORT', '8000'))
+    # 默认端口与 start.bat / start.sh 及前端 webpack 代理保持一致（8002）
+    port = int(os.getenv('PORT', '8002'))
     uvicorn.run(app, host="0.0.0.0", port=port)

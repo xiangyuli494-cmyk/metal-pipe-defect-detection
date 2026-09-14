@@ -47,6 +47,12 @@ export interface VideoDetectProgress {
 class VideoDetectionService {
   private abortController: AbortController | null = null;
 
+  /** 视频相关接口已加鉴权，统一带上 JWT */
+  private authHeaders(): Record<string, string> {
+    const token = localStorage.getItem('accessToken');
+    return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
   /**
    * 上传视频并执行抽帧检测
    */
@@ -93,6 +99,7 @@ class VideoDetectionService {
       // 使用 fetch 直接调用（因为要传 FormData + File）
       const response = await fetch(`${apiService.getBaseUrl()}/api/video/detect`, {
         method: 'POST',
+        headers: this.authHeaders(),
         body: formData,
         signal: this.abortController.signal,
         // 不设置 Content-Type，让浏览器自动设置 multipart/form-data
@@ -167,6 +174,7 @@ class VideoDetectionService {
 
       const response = await fetch(`${apiService.getBaseUrl()}/api/video/detect-frame`, {
         method: 'POST',
+        headers: this.authHeaders(),
         body: formData,
       });
 

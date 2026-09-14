@@ -320,6 +320,9 @@ class ModelService:
             }
         
         try:
+            import time as _time
+            _t0 = _time.perf_counter()
+
             # 根据模型类型进行推理
             if self.model_type == 'yolo':
                 result = self._predict_yolo_with_annotations(file_path)
@@ -332,6 +335,10 @@ class ModelService:
                 result = self._predict_onnx_with_annotations(file_path)
             else:
                 result = self._predict_mock_with_annotations(file_path)
+
+            # 补记真实推理耗时（此前缺失，数据库里 processing_time 恒为 0）
+            if isinstance(result, dict) and not result.get('processing_time'):
+                result['processing_time'] = round(_time.perf_counter() - _t0, 4)
 
             return {
                 'success': True,
