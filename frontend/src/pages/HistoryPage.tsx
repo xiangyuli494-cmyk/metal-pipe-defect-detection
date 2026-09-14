@@ -128,7 +128,9 @@ const getSeverityLabel = (severity: string) => {
 
 // 批次分组记录类型
 interface BatchGroup {
-  batch_id: number;
+  // 后端批次号是 UUID 字符串（见 backend/api/main.py 中 batch_id: str）
+  batch_id: string;
+  batch_name?: string;
   created_at: string;
   username: string;
   total_files: number;
@@ -312,7 +314,7 @@ const HistoryPage: React.FC = () => {
   };
 
   // 切换批次展开/折叠
-  const toggleBatchExpand = (batchId: number) => {
+  const toggleBatchExpand = (batchId: string) => {
     setExpandedBatches(prev => {
       const next = new Set(prev);
       if (next.has(batchId)) {
@@ -345,7 +347,7 @@ const HistoryPage: React.FC = () => {
       y: d.bbox?.y || d.y || 0,
       width: d.bbox?.width || d.width || 0,
       height: d.bbox?.height || d.height || 0,
-      severity: (d.confidence || 0) > 0.9 ? 'high' : (d.confidence || 0) > 0.7 ? 'medium' : 'low'
+      severity: ((d.confidence || 0) > 0.9 ? 'high' : (d.confidence || 0) > 0.7 ? 'medium' : 'low') as DefectDetail['severity']
     }));
 
     setSelectedRecord({

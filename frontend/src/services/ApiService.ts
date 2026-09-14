@@ -75,11 +75,29 @@ export interface CameraDetectionLog {
 }
 
 // 统计数据
+// 与后端 GET /api/statistics 的 data 结构保持一致
+export interface StatisticsTypeBlock {
+  count: number;
+  defects: number;
+  avg_defects: number;
+  avg_time: number;
+}
+
 export interface Statistics {
   total_detections: number;
   total_defects: number;
-  total_batches: number;
-  total_camera_logs: number;
+  single?: StatisticsTypeBlock;
+  batch?: StatisticsTypeBlock;
+  camera?: StatisticsTypeBlock;
+  defect_types?: { type: string; count: number }[];
+  daily_stats?: {
+    date: string;
+    single: number;
+    batch: number;
+    camera: number;
+    total: number;
+    defects: number;
+  }[];
 }
 
 // 每日统计
@@ -748,7 +766,9 @@ class ApiService {
 
   // ============ 当前用户资料API ============
   async updateProfile(data: {
-    user_id?: number;
+    // 前端 AuthContext 把用户 id 存成字符串（dbUser.id.toString()），
+    // 后端 _resolve_user_id 对数字字符串会自行转 int，所以这里两者都收
+    user_id?: number | string;
     display_name?: string;
     email?: string;
     phone?: string;

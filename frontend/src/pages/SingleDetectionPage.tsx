@@ -147,9 +147,12 @@ const SingleDetectionPage: React.FC = () => {
         console.log('模型未加载，正在自动加载...');
         try {
           // 从系统设置读取模型路径，兜底使用默认路径
+          // 未配置 model_path 时不要传空值（后端会 400），
+          // 交给后端启动时的自动加载逻辑兜底
           const settingPath = await apiService.getSetting('model_path');
-          const modelPath = settingPath;
-          await apiService.loadModel(modelPath);
+          if (settingPath) {
+            await apiService.loadModel(settingPath);
+          }
           console.log('模型加载成功，重新获取状态...');
           
           // 重新获取模型状态
@@ -248,8 +251,9 @@ const SingleDetectionPage: React.FC = () => {
         // 自动加载模型
         console.log('模型未加载，正在加载...');
         const settingPath = await apiService.getSetting('model_path');
-        const modelPath = settingPath;
-        await apiService.loadModel(modelPath);
+        if (settingPath) {
+          await apiService.loadModel(settingPath);
+        }
       }
 
       const startTime = Date.now();

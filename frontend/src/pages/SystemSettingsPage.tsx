@@ -192,8 +192,10 @@ const SystemSettingsPage: React.FC = () => {
       });
 
       // 记录当前加载到内存的模型路径
-      if (modelStatus?.data?.is_loaded && modelStatus.data.model_path) {
-        setLoadedModelPath(modelStatus.data.model_path);
+      // getModelStatus 返回的已是 data 本体（is_loaded / model_path 在顶层），
+      // 此前写成 .data?.is_loaded 恒为 undefined，导致已加载模型路径永远不显示
+      if (modelStatus?.is_loaded && modelStatus.model_path) {
+        setLoadedModelPath(modelStatus.model_path);
       }
     } catch (error) {
       console.error('加载系统状态失败:', error);

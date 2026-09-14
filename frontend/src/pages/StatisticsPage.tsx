@@ -43,7 +43,7 @@ import {
   Area,
   Legend
 } from 'recharts';
-import { apiService } from '../services/ApiService';
+import { apiService, type Statistics, type StatisticsTypeBlock } from '../services/ApiService';
 
 // 缺陷类型颜色
 const DEFECT_COLORS: Record<string, string> = {
@@ -73,6 +73,7 @@ const TYPE_LABELS = {
   video: '视频检测'
 };
 
+// 展示维度只有三类：摄像头('camera')检测在图表里归并到 video
 type DetectionType = 'single' | 'batch' | 'video';
 type SeverityFilter = 'none' | 'minor' | 'medium' | 'severe';
 
@@ -159,12 +160,10 @@ const StatisticsPage: React.FC = () => {
       const days = parseInt(dateRange);
       
       // 使用超时机制获取统计数据
-      const statsResponse = await fetchWithTimeout(
-        () => apiService.request('/api/statistics', { method: 'GET' }),
-        { success: false, data: null }
+      const statsData = await fetchWithTimeout(
+        () => apiService.getStatistics(),
+        {} as Statistics
       );
-      
-      const statsData = statsResponse?.data || {};
       
       // 使用超时机制获取检测记录
       const records = await fetchWithTimeout(
@@ -223,9 +222,9 @@ const StatisticsPage: React.FC = () => {
           if (!matchesSeverity) return;
         }
 
-        // 将 camera 类型映射为 video
-        let type = (record.detection_type || 'single') as DetectionType;
-        if (type === 'camera') type = 'video';
+        // 后端写入的 detection_type 可能是 'camera'，图表里统一归并到 video
+        const rawType = (record.detection_type || 'single') as DetectionType | 'camera';
+        const type: DetectionType = rawType === 'camera' ? 'video' : rawType;
         const recordDate = new Date(record.created_at);
         const date = `${recordDate.getMonth() + 1}/${recordDate.getDate()}`;
         
@@ -295,9 +294,9 @@ const StatisticsPage: React.FC = () => {
       setDefectTypeData(defectArray);
 
       // Set detailed stats from API data
-      const singleData = statsData.single || {};
-      const batchData = statsData.batch || {};
-      const cameraData = statsData.camera || {};
+      const singleData: Partial<StatisticsTypeBlock> = statsData.single || {};
+      const batchData: Partial<StatisticsTypeBlock> = statsData.batch || {};
+      const cameraData: Partial<StatisticsTypeBlock> = statsData.camera || {};
       
       setStatsData({
         single: {
@@ -333,7 +332,8 @@ const StatisticsPage: React.FC = () => {
     } finally {
       setIsLoading(false);
     }
-  });
+    // 依赖 dateRange：切换时间范围时重新拉取（此前漏传依赖数组，每次渲染都重建）
+  }, [dateRange]);
 
   // 组件挂载时加载数据，当日期范围变化时也重新加载
   useEffect(() => {

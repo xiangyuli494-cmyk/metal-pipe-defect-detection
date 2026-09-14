@@ -449,7 +449,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
         confidenceThreshold: confidenceThreshold,
         iouThreshold: 0.45,
         userId: user?.id?.toString(),
-        username: user?.user_metadata?.username || user?.email || '未知操作员',
+        username: user?.username || user?.email || '未知操作员',
         onProgress: (progress) => {
           setDetectProgress(progress);
           if (progress.status === 'processing') {
@@ -828,7 +828,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
       formData.append('confidence_threshold', String(confidenceThreshold));
       formData.append('iou_threshold', '0.45');
       formData.append('user_id', user?.id?.toString() || '');
-      formData.append('username', user?.user_metadata?.username || user?.email || '未知操作员');
+      formData.append('username', user?.username || user?.email || '未知操作员');
       
       const response = await fetch(`${apiService.getBaseUrl()}/api/video/realtime/start`, {
         method: 'POST',
@@ -906,7 +906,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
       const formData = new FormData();
       formData.append('file', file);
       formData.append('user_id', user?.id?.toString() || '');
-      formData.append('username', user?.user_metadata?.username || user?.email || '未知操作员');
+      formData.append('username', user?.username || user?.email || '未知操作员');
       formData.append('confidence_threshold', String(confidenceThreshold));
       formData.append('iou_threshold', '0.45');
       formData.append('detection_type', 'video');
@@ -1025,7 +1025,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
       // 调用 predict API 保存到 detection_records 表，detection_type='video'
       const result = await apiService.predict(file, {
         userId: user?.id?.toString(),
-        username: user?.user_metadata?.username || user?.email || '未知操作员',
+        username: user?.username || user?.email || '未知操作员',
         confidenceThreshold: confidenceThreshold,
         detectionType: 'video'
       });
@@ -1106,7 +1106,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
       // 上传到后端
       const result = await apiService.predict(file, {
         userId: user?.id?.toString(),
-        username: user?.user_metadata?.username || user?.email || '未知操作员',
+        username: user?.username || user?.email || '未知操作员',
         confidenceThreshold: confidenceThreshold,
         detectionType: 'camera'
       });
@@ -1442,7 +1442,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
       // 调用 API 检测
       const result = await apiService.predict(file, {
         userId: user?.id?.toString(),
-        username: user?.user_metadata?.username || user?.email || '未知操作员',
+        username: user?.username || user?.email || '未知操作员',
         confidenceThreshold: confidenceThreshold,
         detectionType: 'camera'
       });
@@ -1871,7 +1871,7 @@ const CameraDetectionPage: React.FC<CameraDetectionPageProps> = ({ initialMode }
                                   // 使用 predict API 保存到 detection_records 表，detection_type='video'
                                   const result = await apiService.predict(file, {
                                     userId: user?.id?.toString(),
-                                    username: user?.user_metadata?.username || user?.email || '未知操作员',
+                                    username: user?.username || user?.email || '未知操作员',
                                     confidenceThreshold: confidenceThreshold,
                                     detectionType: 'video'
                                   });
