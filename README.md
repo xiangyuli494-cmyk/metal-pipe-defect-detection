@@ -3,8 +3,11 @@
 > 基于 YOLO 深度学习的金属细管内壁缺陷智能检测系统 · 单张/批量/摄像头/视频四种检测模式 · 内置 RBAC · 数据可视化
 
 ![status](https://img.shields.io/badge/status-stable-brightgreen)
+
 ![python](https://img.shields.io/badge/python-3.8%2B-blue)
+
 ![node](https://img.shields.io/badge/node-18%2B-green)
+
 ![license](https://img.shields.io/badge/license-MIT-lightgrey)
 
 本项目针对金属细管（管径 4–20mm）内壁微缺陷（凸起、焊缝、划痕、腐蚀等）难以肉眼/普通相机观察的痛点，提出"内窥镜图像采集 + YOLO 目标检测 + Web 可视化"的一体化方案。前端 React + TypeScript，后端 Python FastAPI，AI 推理基于 Ultralytics YOLO，数据库默认 MySQL，可一键切换至 Supabase。
@@ -46,16 +49,16 @@
 
 ## 技术栈
 
-| 层 | 技术 |
-|---|---|
-| 前端框架 | React 18 + TypeScript + React Router v6 |
-| 构建工具 | Webpack 5 + Babel 7 |
-| 样式方案 | Tailwind CSS + CSS 变量 + Framer Motion |
-| 图表库 | Recharts |
-| 后端框架 | Python FastAPI + Uvicorn |
+| 层     | 技术                                            |
+| ----- | --------------------------------------------- |
+| 前端框架  | React 18 + TypeScript + React Router v6       |
+| 构建工具  | Webpack 5 + Babel 7                           |
+| 样式方案  | Tailwind CSS + CSS 变量 + Framer Motion         |
+| 图表库   | Recharts                                      |
+| 后端框架  | Python FastAPI + Uvicorn                      |
 | AI 推理 | Ultralytics YOLO (YOLOv11 / YOLO26) + PyTorch |
-| 数据库 | MySQL 8.x (默认) / PostgreSQL (Supabase) |
-| 鉴权 | JWT (python-jose) + bcrypt 密码哈希 |
+| 数据库   | MySQL 8.x (默认) / PostgreSQL (Supabase)        |
+| 鉴权    | JWT (python-jose) + bcrypt 密码哈希               |
 
 ---
 
@@ -134,19 +137,21 @@ metal-pipe-defect-detection/
     └── 架构图.png            # 系统架构图（如有）
 ```
 
+
+
 ---
 
 ## 快速开始
 
 ### 环境要求
 
-| 组件 | 版本要求 | 备注 |
-|---|---|---|
-| Python | ≥ 3.8 | 推荐 3.10 |
-| Node.js | ≥ 18 | 推荐 20 LTS |
-| pnpm | ≥ 8 | 或 `npm i -g pnpm` |
-| MySQL | ≥ 5.7 | 推荐 8.0 |
-| 显存 | ≥ 4 GB | 仅训练需要；推理 CPU 即可 |
+| 组件      | 版本要求   | 备注                |
+| ------- | ------ | ----------------- |
+| Python  | ≥ 3.8  | 推荐 3.10           |
+| Node.js | ≥ 18   | 推荐 20 LTS         |
+| pnpm    | ≥ 8    | 或 `npm i -g pnpm` |
+| MySQL   | ≥ 5.7  | 推荐 8.0            |
+| 显存      | ≥ 4 GB | 仅训练需要；推理 CPU 即可   |
 
 ### 一键启动（Windows）
 
@@ -193,11 +198,11 @@ pnpm run dev                # 默认 :3015
 
 `sql/init.sql` 会在不存在时创建库 `metal_defect_detection` 与 12 张表，并插入 3 个默认账号：
 
-| 用户名 | 密码 | 角色 |
-|---|---|---|
-| admin | admin123 | admin |
+| 用户名      | 密码          | 角色       |
+| -------- | ----------- | -------- |
+| admin    | admin123    | admin    |
 | operator | operator123 | operator |
-| viewer | viewer123 | viewer |
+| viewer   | viewer123   | viewer   |
 
 执行命令：
 
@@ -254,11 +259,11 @@ final_dataset/
 
 ## 默认账号
 
-| 用户名 | 密码 | 角色 |
-|---|---|---|
-| admin | admin123 | 管理员（全部权限） |
-| operator | operator123 | 操作员（可执行检测） |
-| viewer | viewer123 | 查看员（仅查看历史统计） |
+| 用户名      | 密码          | 角色           |
+| -------- | ----------- | ------------ |
+| admin    | admin123    | 管理员（全部权限）    |
+| operator | operator123 | 操作员（可执行检测）   |
+| viewer   | viewer123   | 查看员（仅查看历史统计） |
 
 > ⚠️ 部署到生产前请 `UPDATE users SET password_hash=...` 修改默认密码。
 
@@ -300,33 +305,33 @@ Web 端上传 `.pt`/`.onnx`/`.pb`，热切换激活模型；可重命名、删�
 
 ### 9. AI 在系统中的核心作用
 
-| 模块 | AI 作用 |
-|---|---|
+| 模块      | AI 作用                  |
+| ------- | ---------------------- |
 | 单张/批量检测 | YOLO 推理 → 框 + 类别 + 置信度 |
-| 视频检测 | 抽帧 + YOLO + 时间戳聚合 |
-| 摄像头告警 | 流式推理 → 实时阈值告警 |
-| 质量趋势 | 历史检测结果 → 缺陷率统计 |
-| 数据回流 | 人工复核后的图片可加入数据集继续训练 |
+| 视频检测    | 抽帧 + YOLO + 时间戳聚合      |
+| 摄像头告警   | 流式推理 → 实时阈值告警          |
+| 质量趋势    | 历史检测结果 → 缺陷率统计         |
+| 数据回流    | 人工复核后的图片可加入数据集继续训练     |
 
 ---
 
 ## API 速览
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| POST | `/api/auth/login` | 用户名密码登录，返回 access/refresh token |
-| POST | `/api/auth/refresh` | 用 refresh token 换新 access token |
-| GET  | `/api/model/status` | 当前激活模型状态 |
-| POST | `/api/model/load` | 切换/激活模型 |
-| POST | `/api/model/predict` | 单张图片检测（multipart） |
-| POST | `/api/model/predict-batch` | 批量检测 |
-| POST | `/api/video/detect` | 视频检测 |
-| GET  | `/api/detection-records` | 检测记录列表（支持筛选 / 分页） |
-| GET  | `/api/detection-records/export` | 导出 CSV |
-| GET  | `/api/statistics` | 统计概览 |
-| GET  | `/api/statistics/daily` | 每日统计 |
-| GET  | `/api/users` / `POST` / `PUT` / `DELETE` | 用户管理（admin） |
-| GET  | `/api/settings` / `PUT /api/settings/{key}` | 系统设置 |
+| 方法   | 路径                                          | 说明                              |
+| ---- | ------------------------------------------- | ------------------------------- |
+| POST | `/api/auth/login`                           | 用户名密码登录，返回 access/refresh token |
+| POST | `/api/auth/refresh`                         | 用 refresh token 换新 access token |
+| GET  | `/api/model/status`                         | 当前激活模型状态                        |
+| POST | `/api/model/load`                           | 切换/激活模型                         |
+| POST | `/api/model/predict`                        | 单张图片检测（multipart）               |
+| POST | `/api/model/predict-batch`                  | 批量检测                            |
+| POST | `/api/video/detect`                         | 视频检测                            |
+| GET  | `/api/detection-records`                    | 检测记录列表（支持筛选 / 分页）               |
+| GET  | `/api/detection-records/export`             | 导出 CSV                          |
+| GET  | `/api/statistics`                           | 统计概览                            |
+| GET  | `/api/statistics/daily`                     | 每日统计                            |
+| GET  | `/api/users` / `POST` / `PUT` / `DELETE`    | 用户管理（admin）                     |
+| GET  | `/api/settings` / `PUT /api/settings/{key}` | 系统设置                            |
 
 完整 OpenAPI 文档：启动后端后访问 `http://localhost:8002/docs`。
 
@@ -398,22 +403,22 @@ WantedBy=multi-user.target
 
 ## 常见问题 FAQ
 
-**Q1 启动报 `ModuleNotFoundError: ultralytics`？**
+**Q1 启动报 `ModuleNotFoundError: ultralytics`？**  
 A: 在 backend venv 中 `pip install ultralytics torch torchvision`，或运行 `start.bat` / `start.sh` 让它自动装。
 
-**Q2 摄像头检测黑屏？**
+**Q2 摄像头检测黑屏？**  
 A: 浏览器需 HTTPS 或 `http://localhost`，否则 navigator.mediaDevices 不可用。
 
-**Q3 想换 GPU？**
+**Q3 想换 GPU？**  
 A: 安装对应 CUDA 版本的 torch，然后在 `start.sh` 里把 `device=cpu` 改为 `device=0`。
 
-**Q4 模型切换不生效？**
+**Q4 模型切换不生效？**  
 A: Web 端点击「激活」后，后端需重启或在「模型管理」中点击「重新加载」。
 
-**Q5 数据库密码忘了？**
+**Q5 数据库密码忘了？**  
 A: Windows 下执行 `scripts/reset_mysql_pwd.ps1`（需管理员）；Linux 下用 `mysqld --skip-grant-tables`。
 
-**Q6 上传文件大小限制？**
+**Q6 上传文件大小限制？**  
 A: 默认 10MB，修改 `sql/mysql_schema.sql` 中 `max_file_size` 行即可。
 
 ---
