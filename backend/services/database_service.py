@@ -275,7 +275,13 @@ class DatabaseService:
                 params = []
                 
                 if user_id:
-                    conditions.append("user_id = %s")
+                    # detection_records 表没有 user_id 列，只有 username。
+                    # 数字 ID 经子查询映射到 username，避免非管理员统计接口查空。
+                    try:
+                        int(user_id)
+                        conditions.append("username = (SELECT username FROM users WHERE id = %s)")
+                    except (TypeError, ValueError):
+                        conditions.append("username = %s")
                     params.append(user_id)
                 
                 if detection_type:

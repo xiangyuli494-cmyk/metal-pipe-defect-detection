@@ -11,6 +11,21 @@ import uuid
 from backend.config.database import db_manager
 
 
+def _user_filter_sql(user_id):
+    """把用户参数转成 SQL 过滤条件。
+
+    数字视为 users.id（经子查询映射到 detection_records.username），
+    字符串视为 username 直接过滤。
+    """
+    if not user_id:
+        return "", []
+    try:
+        int(user_id)
+        return "username = (SELECT username FROM users WHERE id = %s)", [user_id]
+    except (TypeError, ValueError):
+        return "username = %s", [user_id]
+
+
 class DetectionService:
     """检测服务类"""
 
@@ -770,23 +785,144 @@ class DetectionService:
                 }
 
     async def get_daily_statistics(self, user_id: Optional[str] = None, days: int = 7) -> List[Dict[str, Any]]:
-        """获取每日统计数据"""
-        # 返回模拟数据
-        result = []
-        for i in range(days):
-            date = (datetime.now() - timedelta(days=i)).strftime('%Y-%m-%d')
-            result.append({
-                'date': date,
-                'count': 0,
-                'defects': 0
-            })
-        return result
+        """获取每日统计数据（真实聚合检测记录，缺失日期补 0）"""
+        # 初始化连续 days 天的零值序列，按日期升序返回
+        today = datetime.now().date()
+        daily = {}
+        for i in range(days - 1, -1, -1):
+            date_str = (today - timedelta(days=i)).strftime('%Y-%m-%d')
+            daily[date_str] = {'date': date_str, 'count': 0, 'defects': 0}
+
+        if self.db_type == 'supabase':
+            from supabase import create_client
+            config = db_manager.get_supabase_config()
+            supabase = create_client(config['url'], config['key'])
+
+            since = (today - timedelta(days=days - 1)).isoformat()
+            query = supabase.table('detection_records').select('detection_time, defect_count').gte('detection_time', since)
+            if user_id:
+                query = query.eq('user_id', user_id)
+            result = query.execute()
+            rows = result.data if result.data else []
+            for row in rows:
+                date_str = str(row.get('detection_time') or '')[:10]
+                if date_str in daily:
+                    daily[date_str]['count'] += 1
+                    daily[date_str]['defects'] += int(row.get('defect_count') or 0)
+        else:
+            import pymysql
+
+            conn = pymysql.connect(
+                host=self.db_manager.config.host,
+                port=self.db_manager.config.port,
+                user=self.db_manager.config.user,
+                password=self.db_manager.config.password,
+                database=self.db_manager.config.database,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor
+            )
+
+            try:
+                conditions = ["detection_time >= DATE_SUB(CURDATE(), INTERVAL %s DAY)"]
+                params = [days - 1]
+                user_cond, user_params = _user_filter_sql(user_id)
+                if user_cond:
+                    conditions.append(user_cond)
+                    params.extend(user_params)
+
+                sql = f"""
+                    SELECT DATE(detection_time) AS date,
+                           COUNT(*) AS count,
+                           COALESCE(SUM(defect_count), 0) AS defects
+                    FROM detection_records
+                    WHERE {' AND '.join(conditions)}
+                    GROUP BY DATE(detection_time)
+                """
+                with conn.cursor() as cursor:
+                    cursor.execute(sql, params)
+                    for row in cursor.fetchall():
+                        date_str = str(row['date'])
+                        if date_str in daily:
+                            daily[date_str]['count'] = int(row['count'])
+                            daily[date_str]['defects'] = int(row['defects'])
+            finally:
+                conn.close()
+
+        return list(daily.values())
 
     async def get_defect_type_statistics(self, user_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """获取缺陷类型统计"""
-        # 返回模拟数据
-        defect_types = ['裂纹', '腐蚀', '点蚀', '划痕', '凹痕', '磨损', '锈蚀', '孔洞', '变形', '其他']
-        return [{'type': t, 'count': 0} for t in defect_types]
+        """获取缺陷类型统计（从检测记录 defects JSON 真实聚合，类别与模型一致）"""
+        from collections import Counter
+        from pathlib import Path
+
+        counter = Counter()
+
+        if self.db_type == 'supabase':
+            from supabase import create_client
+            config = db_manager.get_supabase_config()
+            supabase = create_client(config['url'], config['key'])
+
+            query = supabase.table('detection_records').select('defects').not_.is_('defects', 'null').limit(5000)
+            if user_id:
+                query = query.eq('user_id', user_id)
+            result = query.execute()
+            rows = result.data if result.data else []
+            raw_defects = [row.get('defects') for row in rows]
+        else:
+            import pymysql
+
+            conn = pymysql.connect(
+                host=self.db_manager.config.host,
+                port=self.db_manager.config.port,
+                user=self.db_manager.config.user,
+                password=self.db_manager.config.password,
+                database=self.db_manager.config.database,
+                charset='utf8mb4',
+                cursorclass=pymysql.cursors.DictCursor
+            )
+
+            raw_defects = []
+            try:
+                conditions = ["defects IS NOT NULL", "JSON_LENGTH(defects) > 0"]
+                params = []
+                user_cond, user_params = _user_filter_sql(user_id)
+                if user_cond:
+                    conditions.append(user_cond)
+                    params.extend(user_params)
+
+                sql = f"""
+                    SELECT defects FROM detection_records
+                    WHERE {' AND '.join(conditions)}
+                    ORDER BY id DESC
+                    LIMIT 5000
+                """
+                with conn.cursor() as cursor:
+                    cursor.execute(sql, params)
+                    raw_defects = [row['defects'] for row in cursor.fetchall()]
+            finally:
+                conn.close()
+
+        for raw in raw_defects:
+            if isinstance(raw, str):
+                try:
+                    raw = json.loads(raw)
+                except Exception:
+                    continue
+            if not isinstance(raw, list):
+                continue
+            for d in raw:
+                if isinstance(d, dict):
+                    counter[d.get('class') or d.get('class_name') or '未知'] += 1
+
+        # 补齐模型类别文件中的类别（计数为 0 也展示），保证与模型实际类别一致
+        classes_file = Path(__file__).parent.parent / 'classes.txt'
+        if classes_file.exists():
+            for line in classes_file.read_text(encoding='utf-8').splitlines():
+                cls = line.strip()
+                if cls and cls not in counter:
+                    counter[cls] = 0
+
+        return [{'type': k, 'count': v} for k, v in counter.items()]
 
     async def get_settings(self) -> Dict[str, Any]:
         """获取系统设置"""
