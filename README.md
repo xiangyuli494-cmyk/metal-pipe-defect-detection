@@ -143,14 +143,45 @@ metal-pipe-defect-detection/
 
 ## 快速开始
 
+### 全新电脑部署（评委版，约 20 分钟）
+
+> 面向从未装过环境的新电脑（Windows）。只需联网，首次启动会下载依赖约 2~3 GB（已配置清华镜像源）。
+
+**第 1 步 装 Python 3.10~3.12**：<https://www.python.org/downloads/> → 安装时**勾选 "Add python.exe to PATH"**。
+
+**第 2 步 装 Node.js 18+**：<https://nodejs.org/> → 下载 LTS 版，一路下一步。
+
+**第 3 步 装 MySQL 8.0（最关键）**：
+
+1. <https://dev.mysql.com/downloads/installer/> 下载 `mysql-installer-community-8.0.x.msi`（约 400 MB，无需注册，点 "No thanks, just start my download"）
+2. 安装类型选 **Server only**，端口默认 3306
+3. **root 密码填 `123456`**（与本项目一键脚本约定一致，弱密码警告忽略）
+4. Windows 服务保持默认 **MySQL80**（开机自启）
+
+> 已有 MySQL？保证 MySQL80 服务运行中，并把 root 密码改为 `123456`；或启动后编辑 `backend\.env` 的 `MYSQL_PASSWORD` 为你自己的密码。
+
+**第 4 步 双击 `start.bat`**：自动完成 环境自检 → 建库建表（12 张表 + 3 个演示账号）→ 装依赖 → 拉起后端 `:8002`（自动加载模型权重）→ 拉起前端 `:3015` 并打开浏览器。看到两个黑色窗口保持打开且无报错即成功。
+
+**第 5 步 验证**：浏览器访问 <http://localhost:3015>，用 `admin / admin123` 登录，进入"单张检测"上传任意管道内壁图片即可看到检测框。API 文档：<http://localhost:8002/docs>。
+
+**新电脑常见问题**：
+
+| 现象 | 解决 |
+| --- | --- |
+| 后端窗口一闪而过 | 用 cmd 手动执行 `backend\venv\Scripts\python.exe -m uvicorn api.main:app --port 8002` 查看报错 |
+| 登录提示"数据库未连接" | Win+R 输入 `services.msc` 启动 MySQL80；或密码不是 123456：改 `backend\.env` 的 `MYSQL_PASSWORD` |
+| 报 `UnicodeEncodeError` | 必须用 `start.bat` 启动（脚本已设置 UTF-8 编码） |
+| 没有 NVIDIA 显卡 | 不影响，推理自动用 CPU，仅速度稍慢 |
+| 端口被占用 | 关闭占用 8002 / 3015 的程序后重新双击 start.bat |
+
 ### 环境要求
 
 | 组件      | 版本要求   | 备注                |
 | ------- | ------ | ----------------- |
-| Python  | ≥ 3.8  | 推荐 3.10           |
+| Python  | 3.10 ~ 3.12 | 推荐 3.12           |
 | Node.js | ≥ 18   | 推荐 20 LTS         |
 | pnpm    | ≥ 8    | 或 `npm i -g pnpm` |
-| MySQL   | ≥ 5.7  | 推荐 8.0            |
+| MySQL   | ≥ 5.7  | 推荐 8.0（见上方评委版步骤） |
 | 显存      | ≥ 4 GB | 仅训练需要；推理 CPU 即可   |
 
 ### 一键启动（Windows）

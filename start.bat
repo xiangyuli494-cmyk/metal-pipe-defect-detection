@@ -80,7 +80,8 @@ echo    安装/更新 Python 依赖...
 pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple --quiet
 if not exist ".env" (
     copy .env.example .env >nul
-    echo    已生成 backend\.env，请按需修改
+    powershell -NoProfile -Command "(Get-Content .env -Raw -Encoding UTF8) -replace '请改成你的密码','123456' | Set-Content .env -Encoding UTF8 -NoNewline"
+    echo    已生成 backend\.env（默认 MySQL 密码 123456，与初始化脚本一致）
 )
 REM 模型权重放到 models\
 if not exist "models\best.pt" if exist "..\models_weights\best.pt" (
@@ -95,7 +96,7 @@ netstat -ano | findstr ":8002.*LISTENING" >nul
 if %errorlevel%==0 (
     echo    后端已在运行
 ) else (
-    start "后端 FastAPI :8002" /d "%~dp0backend" cmd /k "venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8002"
+    start "后端 FastAPI :8002" /d "%~dp0backend" cmd /k "chcp 65001 >nul && set PYTHONUTF8=1 && venv\Scripts\python.exe -m uvicorn api.main:app --host 0.0.0.0 --port 8002"
     echo    后端启动中...
 )
 
