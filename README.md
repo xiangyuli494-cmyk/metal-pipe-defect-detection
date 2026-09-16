@@ -66,55 +66,68 @@
 
 ```
 metal-pipe-defect-detection/
-├── README.md                 # 你正在看的总览
-├── start.bat                 # Windows 一键启动
+├── README.md                 # 你正在看的总览（含评委版一键部署步骤）
+├── start.bat                 # Windows 一键启动（装依赖/建库/拉起前后端）
 ├── start.sh                  # Linux / macOS 一键启动
+├── stop.sh                   # 停止前后端服务
 ├── LICENSE
 ├── .gitignore
 │
 ├── backend/                  # Python 后端（FastAPI）
 │   ├── api/
-│   │   ├── main.py           # 主入口：所有 HTTP 路由
-│   │   ├── auth.py           # JWT + RBAC
+│   │   ├── main.py           # 主入口：全部 HTTP 路由（67 条）
+│   │   ├── auth.py           # JWT + RBAC 三级权限
 │   │   └── video.py          # 视频检测路由
 │   ├── services/
-│   │   ├── model_service.py  # 加载/推理 YOLO 等模型
-│   │   ├── detection_service.py
-│   │   ├── database_service.py
-│   │   ├── camera_service.py
-│   │   └── video_detector.py
+│   │   ├── model_service.py      # 模型加载 / 推理 / 热切换
+│   │   ├── detection_service.py  # 检测记录、统计聚合业务
+│   │   ├── database_service.py   # 用户/记录等数据访问
+│   │   ├── password_util.py      # bcrypt 密码哈希（兼容旧 MD5 密码）
+│   │   ├── camera_service.py     # 摄像头会话管理
+│   │   └── video_detector.py     # 视频边播边检（OpenCV + YOLO）
 │   ├── config/database.py    # MySQL/Supabase 自动切换
-│   ├── classes.txt           # 缺陷类别（默认：凸起、焊缝）
-│   ├── requirements.txt
+│   ├── models/               # 运行时模型目录（start.bat 自动从 models_weights 拷贝）
+│   │   ├── best.pt
+│   │   └── classes.txt
+│   ├── tests/
+│   │   └── api_selftest.py   # 全接口自测脚本（84 项断言，见 docs/功能自测报告.md）
+│   ├── classes.txt           # 缺陷类别（凸起、焊缝）
+│   ├── requirements.txt      # 依赖清单（适配 Python 3.10~3.12）
 │   └── .env.example          # 环境变量模板
 │
 ├── frontend/                 # React 前端
 │   ├── src/
 │   │   ├── App.tsx           # 路由根
 │   │   ├── index.tsx
-│   │   ├── pages/            # Login/Single/Batch/Camera/History/Statistics/Profile/Users/Settings
-│   │   ├── components/Layout.tsx
-│   │   ├── contexts/AuthContext.tsx
-│   │   └── services/
-│   │       ├── ApiService.ts
-│   │       ├── LocalStorageService.ts
-│   │       └── VideoDetectionService.ts
-│   ├── public/
+│   │   ├── pages/            # 登录/单张/批量/摄像头/历史/统计/资料/用户/设置 9 个页面
+│   │   ├── components/Layout.tsx    # 整体布局（侧边栏/顶栏）
+│   │   ├── contexts/AuthContext.tsx # 登录态管理
+│   │   ├── hooks/
+│   │   │   ├── useCameraDetection.ts # 摄像头实时检测逻辑
+│   │   │   └── useTheme.ts
+│   │   ├── services/
+│   │   │   ├── ApiService.ts         # 后端接口封装
+│   │   │   ├── LocalStorageService.ts
+│   │   │   └── VideoDetectionService.ts
+│   │   ├── supabase/         # Supabase 客户端与类型（DB_TYPE=supabase 时生效）
+│   │   ├── styles/index.css
+│   │   └── types/uuid.d.ts
+│   ├── public/index.html
 │   ├── package.json
-│   ├── webpack.config.js
+│   ├── webpack.config.js     # 含 /api 反向代理到 :8002
 │   ├── tsconfig.json
 │   ├── tailwind.config.js
-│   └── postcss.config.js
+│   ├── postcss.config.js
+│   └── .npmrc                # 国内镜像配置
 │
 ├── sql/
 │   ├── mysql_schema.sql      # MySQL 库表结构（幂等）
-│   └── init.sql              # 同上 + 默认用户种子（密码已 bcrypt 哈希）
+│   └── init.sql              # 同上 + 3 个默认账号种子（密码已 bcrypt 哈希）
 │
 ├── models_weights/
-│   ├── best.pt               # 自训练 YOLO 权重（凸起 / 焊缝）
+│   ├── best.pt               # 自训练 YOLO26 权重（凸起 / 焊缝）
 │   ├── classes.txt           # 类别文件
-│   ├── README.md             # 模型说明 + 下载链接（如有）
-│   └── yolo26n.pt            # YOLO26 预训练（可选，用于再训练）
+│   └── README.md             # 模型说明与再训练指引
 │
 ├── scripts/
 │   ├── init_db.sh            # 数据库初始化
@@ -126,15 +139,16 @@ metal-pipe-defect-detection/
 │   ├── test_video_detect.py  # 视频检测 API 测试
 │   ├── train_yolo26.py       # YOLO26 训练脚本（参考）
 │   ├── train_yolov11.py      # YOLOv11 训练脚本（参考）
-│   ├── yolo数据集格式转化.py     # Labelme JSON → YOLO txt
-│   ├── 批量图片处理流水线.py     # 图像预处理（顶帽变换 + 圆形掩码）
+│   ├── yolo数据集格式转化.py     # 数据集格式转化
+│   ├── 批量图片处理流水线.py     # 图像预处理流水线
 │   └── 文件夹图片批量处理.py     # 文件夹级批量处理
 │
 └── docs/
     ├── 应用方案.pdf          # 完整应用方案（背景/痛点/方案/功能/前景）
     ├── 用户操作手册.md       # 详细使用说明
     ├── 视频旁白脚本.md       # 演示视频旁白
-    └── 架构图.png            # 系统架构图（如有）
+    ├── 功能自测报告.md       # 84 项断言全过 + 7 项缺陷修复记录
+    └── build_pdf.py          # 应用方案 PDF 生成脚本
 ```
 
 
