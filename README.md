@@ -90,7 +90,7 @@ metal-pipe-defect-detection/
 │   │   ├── best.pt
 │   │   └── classes.txt
 │   ├── tests/
-│   │   └── api_selftest.py   # 全接口自测脚本（84 项断言，见 docs/功能自测报告.md）
+│   │   └── api_selftest.py   # 全接口自测脚本（84 项断言）
 │   ├── classes.txt           # 缺陷类别（凸起、焊缝）
 │   ├── requirements.txt      # 依赖清单（适配 Python 3.10~3.12）
 │   └── .env.example          # 环境变量模板
@@ -145,10 +145,7 @@ metal-pipe-defect-detection/
 │
 └── docs/
     ├── 应用方案.pdf          # 完整应用方案（背景/痛点/方案/功能/前景）
-    ├── 用户操作手册.md       # 详细使用说明
-    ├── 视频旁白脚本.md       # 演示视频旁白
-    ├── 功能自测报告.md       # 84 项断言全过 + 7 项缺陷修复记录
-    └── build_pdf.py          # 应用方案 PDF 生成脚本
+    └── 用户操作手册.md       # 详细使用说明
 ```
 
 
